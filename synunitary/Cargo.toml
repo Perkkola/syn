@@ -1,0 +1,10 @@
+[package]
+name = "synunitary"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+faer = "0.24" 
+mathru = "0.16.2"
+rand = "0.10.1"
+num-complex = "0.4"
