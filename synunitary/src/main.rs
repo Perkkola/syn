@@ -1,12 +1,12 @@
 use std::collections::{VecDeque, HashMap};
 use std::env;
 use faer::traits::ext::ComplexFieldExt;
-use faer::traits::math_utils::sqrt;
 use faer::{Mat, complex::Complex64, Scale, mat};
-use synunitary::utils::{generate_u, angles_from_diag};
+use synunitary::utils::{generate_u, angles_from_diag, Gate};
+use synunitary::architecture_aware_routing::RoutedMultiplexer;
 pub struct BlockZXZ {
     coupling_map: Vec<[i64; 2]>,
-    gate_queue: VecDeque<(&'static str, i32, i32, f64)>,
+    gate_queue: VecDeque<Gate>,
     diag: Mat<Complex64>,
     routed_multiplexers: Vec<i64>,
     swaps_per_level: Vec<i64>,
@@ -94,7 +94,7 @@ impl BlockZXZ {
         let recursion_level = recursion_level.unwrap_or(0);
 
         let n = u.nrows();
-        let num_qubits = (n as f64).log2().ceil() as i32;
+        let num_qubits = (n as f64).log2().ceil() as i64;
         let target_qubit = num_qubits - 1;
         let block_len = n / 2;
 
@@ -137,10 +137,13 @@ impl BlockZXZ {
         let h = mat![[Complex64::new(1.0 / f64::sqrt(2.0), 0.0), Complex64::new(1.0 / f64::sqrt(2.0), 0.0)],
                                     [Complex64::new(1.0 / f64::sqrt(2.0), 0.0), Complex64::new(-1.0 / f64::sqrt(2.0), 0.0)]];
 
-        print!("{block_diag_C:#?}\n");
+        // print!("{block_diag_C:#?}\n");
         let angles_C = angles_from_diag(block_diag_C);
+
+        let multiplexer = RoutedMultiplexer::new(self.coupling_map.clone(), num_qubits);
+        // print!("{multiplexer}");
         // print!("{block_diag_A:#?}\n");
-        print!("{angles_C:#?}\n");
+        // print!("{angles_C:#?}\n");
 
         self
     }

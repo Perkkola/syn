@@ -2,6 +2,13 @@ use faer::{Mat, complex::Complex64};
 use rand::RngExt;
 use std::f64::consts::PI;
 
+pub struct Gate {
+    name: String,
+    ctrl: i32,
+    targ: i32,
+    value: f64
+}
+
 pub fn generate_u(num_qubits: usize) -> Mat<Complex64> {
     let dim = 1usize << num_qubits; // 2^num_qubits
     let mut rng = rand::rng();
