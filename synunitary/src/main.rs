@@ -140,7 +140,8 @@ impl BlockZXZ {
         // print!("{block_diag_C:#?}\n");
         let angles_C = angles_from_diag(block_diag_C);
 
-        let multiplexer = RoutedMultiplexer::new(self.coupling_map.clone(), num_qubits);
+        let mut multiplexer = RoutedMultiplexer::new(self.coupling_map.clone(), num_qubits);
+        multiplexer.find_optimal_neighborhood_closest_cluster();
         // print!("{multiplexer}");
         // print!("{block_diag_A:#?}\n");
         // print!("{angles_C:#?}\n");
@@ -158,6 +159,7 @@ fn main() {
     
     let mut zxz = BlockZXZ::new(coupling_map);
     let u = generate_u(num_qubits);
+
 
     zxz.compute_decomposition(u, Some(false), Some(false), Some(false), Some(0));
    
