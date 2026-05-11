@@ -1,26 +1,26 @@
 use std::fmt::{Display, Formatter, Error};
 use std::{collections::{HashMap, HashSet, VecDeque}};
 use itertools::Itertools;
-
+use std::io;
 use crate::utils::{Gate, get_path};
 use crate::cluster_finding::{find_closest_cluster};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RoutedMultiplexer {
-    multiplexer_angles: Vec<f64>,
-    num_qubits: i64,
-    num_control: i64,
+    pub multiplexer_angles: Vec<f64>,
+    pub num_qubits: i64,
+    pub num_control: i64,
     neighbors: HashMap<i64, HashSet<i64>>,
-    root: i64,
-    furthest_node: i64,
-    arch_to_grey_map: HashMap<i64, usize>,
-    grey_to_arch_map: HashMap<usize, i64>,
-    optimal_neighborhood: HashMap<i64, Vec<i64>>,
+    pub root: i64,
+    pub furthest_node: i64,
+    pub arch_to_grey_map: HashMap<i64, usize>,
+    pub grey_to_arch_map: HashMap<usize, i64>,
+    pub optimal_neighborhood: HashMap<i64, Vec<i64>>,
     pairwise_dists: HashMap<i64, HashMap<i64, i64>>,
-    gray_code: Vec<i64>,
+    pub gray_code: Vec<i64>,
     gray_gate_queue: VecDeque<Gate>,
     gray_state_queue: VecDeque<i64>,
-    arch_qubits: HashSet<i64>,
+    pub arch_qubits: HashSet<i64>,
     gate_queue: VecDeque<Gate>,
     discovered_pp_terms: HashSet<i64>,
     state: HashMap<i64, i64>,
@@ -198,6 +198,9 @@ impl RoutedMultiplexer {
         if cnot.targ == self.num_control as usize {
             if !self.discovered_pp_terms.contains(self.state.get(&self.num_control).unwrap()) {
                 self.discovered_pp_terms.insert(*self.state.get(&self.num_control).unwrap());
+                
+                let mut input = String::new();
+                io::stdin().read_line(&mut input);
                 self.gate_queue.push_back(Gate {
                     name: "RZ",
                     ctrl: 0,
@@ -222,7 +225,7 @@ impl RoutedMultiplexer {
             let state_ctrl = self.state.get(&(grey_path[i] as i64)).unwrap();
             let state_targ = self.state.get(&(grey_path[i + 1] as i64)).unwrap();
             
-            self.state.insert((i + 1) as i64, *state_ctrl ^ *state_targ);
+            self.state.insert(grey_path[i + 1] as i64, *state_ctrl ^ *state_targ);
             self.cancel_or_append(Gate {
                 name: "CX",
                 ctrl: grey_path[i],
@@ -231,11 +234,11 @@ impl RoutedMultiplexer {
             }, ignore);
     }
 
-        for j in (1..grey_path_dist - 3).rev() {
+        for j in (1..grey_path_dist - 1).rev() {
             let state_ctrl = self.state.get(&(grey_path[j - 1] as i64)).unwrap();
             let state_targ = self.state.get(&(grey_path[j] as i64)).unwrap();
             
-            self.state.insert((j) as i64, *state_ctrl ^ *state_targ);
+            self.state.insert(grey_path[j] as i64, *state_ctrl ^ *state_targ);
             self.cancel_or_append(Gate {
                 name: "CX",
                 ctrl: grey_path[j - 1],
@@ -248,7 +251,7 @@ impl RoutedMultiplexer {
             let state_ctrl = self.state.get(&(grey_path[k] as i64)).unwrap();
             let state_targ = self.state.get(&(grey_path[k + 1] as i64)).unwrap();
             
-            self.state.insert((k + 1) as i64, *state_ctrl ^ *state_targ);
+            self.state.insert(grey_path[k + 1] as i64, *state_ctrl ^ *state_targ);
             self.cancel_or_append(Gate {
                 name: "CX",
                 ctrl: grey_path[k],
@@ -257,11 +260,11 @@ impl RoutedMultiplexer {
             }, ignore);
     }
 
-        for l in (2..grey_path_dist - 3).rev() {
+        for l in (2..grey_path_dist - 1).rev() {
                 let state_ctrl = self.state.get(&(grey_path[l - 1] as i64)).unwrap();
                 let state_targ = self.state.get(&(grey_path[l] as i64)).unwrap();
                 
-                self.state.insert((l) as i64, *state_ctrl ^ *state_targ);
+                self.state.insert(grey_path[l] as i64, *state_ctrl ^ *state_targ);
                 self.cancel_or_append(Gate {
                     name: "CX",
                     ctrl: grey_path[l - 1],
@@ -288,7 +291,9 @@ impl RoutedMultiplexer {
         self.discovered_pp_terms = HashSet::from([(2i64).pow(self.num_control as u32)]);
         self.state = (0..self.num_qubits).map(|x| (x, 1 << x)).collect();
         self.state_to_angle_dict = self.gray_state_queue.clone().iter().copied().zip(self.multiplexer_angles.clone()).collect();
-
+        print!("{:#?}", self.gray_state_queue);
+        print!("{:#?}", self.multiplexer_angles);
+        print!("{:#?}", self.state_to_angle_dict);
         let init_state = self.state.clone();
 
         self.gate_queue.push_back(Gate { 
@@ -332,5 +337,25 @@ impl RoutedMultiplexer {
         (circuit_length, self.gate_queue.clone())
     }
 
-    pub fn replace_mapped_angles(&mut self) {}
+    pub fn replace_mapped_angles(&mut self, new_angles: &Vec<f64>, reverse: bool) -> VecDeque<Gate> {
+        let mut old_gates: VecDeque<Gate> = self.gate_queue.clone();
+        let mut new_gates: VecDeque<Gate> = VecDeque::new();
+
+        while !old_gates.is_empty() {
+            let gate: Gate = if reverse {old_gates.pop_back().unwrap()} else {old_gates.pop_front().unwrap()};
+            if gate.name != "RZ" { new_gates.push_back(gate); }
+            else {
+                let angle = gate.value;
+                let new_angle = new_angles[self.multiplexer_angles.iter().find_position(|x| **x == angle).unwrap().0];
+                let new_gate = Gate {
+                    name: gate.name,
+                    ctrl: gate.ctrl,
+                    targ: gate.targ,
+                    value: new_angle
+                };
+                new_gates.push_back(new_gate);
+            }
+        }
+        new_gates
+    }
 }

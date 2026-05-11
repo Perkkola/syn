@@ -4,7 +4,7 @@ use std::f64::consts::PI;
 use pathfinding::prelude::dijkstra;
 use std::{collections::{HashMap, HashSet, VecDeque}};
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Gate {
     pub name: &'static str,
     pub ctrl: usize,
@@ -82,4 +82,24 @@ pub fn get_path(neighbors: &HashMap<i64, HashSet<i64>>, subset_nodes: &HashSet<i
 );
 
     result.unwrap().0
+}
+
+pub fn mottonen_transformation(multiplexer_angles: &Vec<f64>, gray_code: Option<&Vec<i64>>) -> Vec<f64> {
+    let n = multiplexer_angles.len();
+    let mut transformed_angles: Vec<f64> = vec![0.0; n];
+    let num_controls = (n as f64).log2() as usize;
+
+    let power = 2.0f64.powi(-(num_controls as i32));
+
+    for i in 0..n {
+        let mut temp: f64 = 0.0;
+        let g_m = if gray_code.clone() == None { i ^ (i >> 1)} else {gray_code.clone().unwrap()[i] as usize};
+
+        for j in 0..n {
+            let dot_product = (g_m & j).count_ones() % 2;
+            temp += if dot_product == 1 { -multiplexer_angles[j] } else { multiplexer_angles[j] };
+        }
+        transformed_angles[i] = power * temp * 2.0;
+    }
+    transformed_angles
 }
