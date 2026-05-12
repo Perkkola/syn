@@ -1,11 +1,11 @@
 use std::collections::{VecDeque, HashMap};
 use std::{env};
-use faer::traits::ext::ComplexFieldExt;
 use faer::{Mat, complex::Complex64, Scale, mat};
 use itertools::Itertools;
-use synunitary::utils::{generate_u, angles_from_diag, Gate, mottonen_transformation};
+use synunitary::utils::{generate_u, angles_from_diag, Gate, mottonen_transformation, gates_to_unitary, equal_up_to_global_phase};
 use synunitary::architecture_aware_routing::RoutedMultiplexer;
-use std::io;
+use synunitary::two_qubit_decomposition::{extract_diagonal, three_cnot_decomposition};
+use std::time::Instant;
 
 pub struct BlockZXZ {
     coupling_map: Vec<[i64; 2]>,
@@ -61,16 +61,16 @@ impl BlockZXZ {
 
     fn block(&self, tl: &Mat<Complex64>, tr: &Mat<Complex64>, bl: &Mat<Complex64>, br: &Mat<Complex64>) -> Mat<Complex64> {
         let n = tl.nrows();
-
+        
         Mat::from_fn(2 * n, 2 * n, |i, j| {
             if i < n && j < n {
                 tl[(i, j)]
             }
             else if i >= n && j < n {
-                tr[(i % n, j % n)]
+                bl[(i % n, j % n)]
             }
             else if i < n && j >= n {
-                bl[(i % n, j % n)]
+                tr[(i % n, j % n)]
             } else {
                 br[(i % n, j % n)]
             }
@@ -78,23 +78,31 @@ impl BlockZXZ {
     }
 
     fn reunitarize(&self, w: Mat<Complex64>) -> Mat<Complex64> {
-        let mut x = w.cloned();
-        let n = x.nrows();
-        for _ in 0..50 {
-            let xhx = x.conjugate().transpose() * &x;
-            let eye = Mat::<Complex64>::identity(n, n);
-            let err = (&xhx - &eye).map(|val| val.abs()).max().unwrap_or(0.0);
-            if err < 1.0e-14 {
-                break;
-            }
-            x = x * (Scale(Complex64::new(3.0, 0.0)) * &eye - &xhx) / Scale(Complex64::new(2.0, 0.0));
-        }
-        x
+        let svd = w.svd().expect("SVD failed in reunitarize");
+        svd.U() * svd.V().conjugate().transpose()
+        // let mut x = w.cloned();
+        // let n = x.nrows();
+        // for _ in 0..50 {
+        //     let xhx = x.conjugate().transpose() * &x;
+        //     let eye = Mat::<Complex64>::identity(n, n);
+        //     let err = (&xhx - &eye).map(|val| val.abs()).max().unwrap_or(0.0);
+        //     if err < 1.0e-14 {
+        //         break;
+        //     }
+        //     x = x * (Scale(Complex64::new(3.0, 0.0)) * &eye - &xhx) / Scale(Complex64::new(2.0, 0.0));
+        // }
+        // print!("{w:#?}");
+        // print!("{x:#?}");
+        // // print!("{u_2:#?}");
+        // let mut input = String::new();
+        // io::stdin().read_line(&mut input);
+        // x
     }
 
     pub fn demultiplex(&self, u_1: Mat<Complex64>, u_2: Mat<Complex64>) -> (Mat<Complex64>, Mat<Complex64>, Mat<Complex64>) {
         let block_len = u_1.nrows();
         let zeros = Mat::<Complex64>::zeros(block_len, block_len);
+
 
         let u_1_u_2_dgr = u_1 * u_2.conjugate().transpose();
 
@@ -104,12 +112,13 @@ impl BlockZXZ {
 
         let sqrt_eigval = eigvals.map(|eigval| (Complex64::i() * eigval.arg() / 2.0).exp());
 
-        let mut w = &sqrt_eigval * &eigvecs.conjugate().transpose() * &u_2;
-        w = self.reunitarize(w);
-
         let diag_as_mat = Mat::from_fn(block_len, block_len, |i, j| {
             if i == j { sqrt_eigval[i] } else { Complex64::new(0.0, 0.0) }
         });
+
+        let mut w = &sqrt_eigval * &eigvecs.conjugate().transpose() * &u_2;
+        w = self.reunitarize(w);
+
 
         let block_diag = self.block(&diag_as_mat, &zeros, &zeros, &diag_as_mat.conjugate().transpose().to_owned());
 
@@ -119,12 +128,12 @@ impl BlockZXZ {
     fn decompose_two_qubit_unitary(&mut self, mut u: Mat<Complex64>, rightmost_unitary: bool, leftmost_unitary: bool) {
         if !rightmost_unitary { u = self.diag.clone() * u; }
         if !leftmost_unitary {
-            // let (diag_u, gates) = extract_diagonal(u, 0);
-            // self.diag = diag_u
-            // self.gate_queue.append(&mut gates);
+            let (diag_u, mut gates) = extract_diagonal(&u, 0);
+            self.diag = diag_u;
+            self.gate_queue.append(&mut gates);
         } else {
-            // let gates = three_cnot_decomposition(u, 0);
-            // self.gate_queue.append(&mut gates);
+            let mut gates = three_cnot_decomposition(&u, 0);
+            self.gate_queue.append(&mut gates);
         }
     }
 
@@ -138,22 +147,25 @@ impl BlockZXZ {
 
         for i in (3..num_qubits + 1).rev() {
             let target = multiplexer.grey_to_arch_map[&((i - 1) as usize)];
-            let mut path_to_root = &multiplexer.optimal_neighborhood[&target];
+            let mut path_to_root = &multiplexer.clone().optimal_neighborhood[&target];
 
-            let mut best_cost = multiplexer.clone().get_optimal_gray_code();
+            let mut best_cost = multiplexer.get_optimal_gray_code();
             let mut best_arch_to_grey = multiplexer.arch_to_grey_map.clone();
             let mut best_swap_count = 0i64;
             let mut best_multiplexer = multiplexer.clone();
 
             let mut arch_to_grey_copy = multiplexer.arch_to_grey_map.clone();
 
+            let mut new_path_to_root: Vec<i64> = Vec::new();
             for node in path_to_root {
                 if !arch_to_grey_copy.keys().contains(node) {
-                    multiplexer.clone().recompute_optimal_neighborhood();
-                    path_to_root = &multiplexer.optimal_neighborhood[&target];
+                    multiplexer.recompute_optimal_neighborhood();
+                    new_path_to_root = multiplexer.optimal_neighborhood[&target].clone();
+                    
                 }
             }
-
+            path_to_root = &new_path_to_root;
+            
             let mut swap_count = 0i64;
 
             for j in (1..path_to_root.len()).rev() {
@@ -217,10 +229,7 @@ impl BlockZXZ {
         let num_qubits = (n as f64).log2().ceil() as i64;
         let target_qubit = num_qubits - 1;
 
-        if init { 
-            self.initialize_multiplexers(num_qubits);
-            print!("{:?}", self.routed_multiplexers);
-         }
+        if init { self.initialize_multiplexers(num_qubits); }
         if num_qubits == 2 {
             self.decompose_two_qubit_unitary(u.cloned(), rightmost_unitary, leftmost_unitary);
             return;
@@ -228,23 +237,25 @@ impl BlockZXZ {
 
         let block_len = n / 2;
 
+        // print!("{b_11:#?}");
+
         let x = u.get(0..block_len, 0..block_len);
         let y = u.get(0..block_len, block_len..);
         let u_21 = u.get(block_len.., 0..block_len);
         let u_22 = u.get(block_len.., block_len..);
 
         let svd_x = x.svd().expect("Something went wrong!");
-        let v_x = svd_x.U();
-        let sigma_x = svd_x.S();
-        let w_x_dgr = svd_x.V();
+        let v_x = (&svd_x).U();
+        let sigma_x = (&svd_x).S();
+        let w_x_dgr = (&svd_x).V();
         
         let s_x = v_x * sigma_x * v_x.conjugate().transpose();
         let u_x = v_x * w_x_dgr;
 
         let svd_y = y.svd().expect("Something went wrong!");
-        let v_y = svd_y.U();
-        let sigma_y = svd_y.S();
-        let w_y_dgr = svd_y.V();
+        let v_y = (&svd_y).U();
+        let sigma_y = (&svd_y).S();
+        let w_y_dgr = (&svd_y).V();
 
         let s_y = v_y * sigma_y * v_y.conjugate().transpose();
         let u_y = v_y * w_y_dgr;
@@ -260,6 +271,7 @@ impl BlockZXZ {
 
         let (v_a, block_diag_a, w_a) = self.demultiplex(a_1, a_2);
         let (v_c, block_diag_c, w_c) = self.demultiplex(eye.clone(), c);
+        
         
         let mut b_tilde = self.block(&(&w_a * &v_c), &zeros, &zeros, &(&w_a * &b * &v_c));
 
@@ -311,12 +323,14 @@ impl BlockZXZ {
 
             let mut unitary = self.get_cnot_unitary(num_qubits, &popped_gate);
             unitary = h.kron(eye.clone()) * unitary * h.kron(eye.clone());
-            b_tilde = unitary.clone() * b_tilde * unitary;
+            b_tilde = unitary.clone() * b_tilde * unitary
+        
         }
 
         let b_11 = b_tilde.get(0..block_len, 0..block_len).to_owned();
         let b_22 = b_tilde.get(block_len.., block_len..).to_owned();
 
+         
         let (v_b, block_diag_b, w_b) = self.demultiplex(b_11, b_22);
         let angles_b = angles_from_diag(block_diag_b);
         let transformed_angles_b = mottonen_transformation(&angles_b, Some(&routed_multiplexer.gray_code));
@@ -373,7 +387,14 @@ fn main() {
     let mut zxz = BlockZXZ::new(coupling_map);
     let u = generate_u(num_qubits);
 
-
-    zxz.compute_decomposition(u, true, true, true, 0);
+    // print!("{u:#?} \n asd");
+    let now = Instant::now();
+    zxz.compute_decomposition(u.clone(), true, true, true, 0);
+    let elapsed = now.elapsed();
+    println!("Elapsed: {:.2?}", elapsed);
     
+    // let recon_u = gates_to_unitary(&zxz.gate_queue, num_qubits);
+    // // print!("{recon_u:#?}");
+    // let phase = equal_up_to_global_phase(&recon_u, &u, 1e-4);
+    // print!("Unitaries are equivalent: {}", phase != None);
 }

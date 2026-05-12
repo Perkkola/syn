@@ -145,6 +145,8 @@ impl RoutedMultiplexer {
         }
 
         let upper_bound: i64 = (2i64).pow(self.num_control as u32) + 1;
+        self.gray_gate_queue = VecDeque::new();
+        self.gray_state_queue = VecDeque::new();
 
         let mut grey_state: HashMap<i64, i64> = (0..self.num_qubits).map(|x| (x, 1 << x as i64)).into_iter().collect();
 
@@ -199,8 +201,8 @@ impl RoutedMultiplexer {
             if !self.discovered_pp_terms.contains(self.state.get(&self.num_control).unwrap()) {
                 self.discovered_pp_terms.insert(*self.state.get(&self.num_control).unwrap());
                 
-                let mut input = String::new();
-                io::stdin().read_line(&mut input);
+                // let mut input = String::new();
+                // io::stdin().read_line(&mut input);
                 self.gate_queue.push_back(Gate {
                     name: "RZ",
                     ctrl: 0,
@@ -291,9 +293,9 @@ impl RoutedMultiplexer {
         self.discovered_pp_terms = HashSet::from([(2i64).pow(self.num_control as u32)]);
         self.state = (0..self.num_qubits).map(|x| (x, 1 << x)).collect();
         self.state_to_angle_dict = self.gray_state_queue.clone().iter().copied().zip(self.multiplexer_angles.clone()).collect();
-        print!("{:#?}", self.gray_state_queue);
-        print!("{:#?}", self.multiplexer_angles);
-        print!("{:#?}", self.state_to_angle_dict);
+        // print!("{:#?}", self.gray_state_queue);
+        // print!("{:#?}", self.multiplexer_angles);
+        // print!("{:#?}", self.state_to_angle_dict);
         let init_state = self.state.clone();
 
         self.gate_queue.push_back(Gate { 

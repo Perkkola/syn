@@ -1,4 +1,4 @@
-use faer::{Mat, complex::Complex64};
+use faer::{Mat, complex::Complex64, traits::ext::ComplexFieldExt};
 use rand::RngExt;
 use std::f64::consts::PI;
 use pathfinding::prelude::dijkstra;
@@ -102,4 +102,180 @@ pub fn mottonen_transformation(multiplexer_angles: &Vec<f64>, gray_code: Option<
         transformed_angles[i] = power * temp * 2.0;
     }
     transformed_angles
+}
+
+
+use std::f64::consts::SQRT_2;
+
+use faer::{mat};
+// =====================================================================
+//                            Public API
+// =====================================================================
+
+/// Build the 2^n × 2^n unitary realised by `gates`.
+///
+/// `gates` is in time order: the front of the queue is applied first.
+pub fn gates_to_unitary(gates: &VecDeque<Gate>, num_qubits: usize) -> Mat<Complex64> {
+    let dim = 1usize << num_qubits;
+    let mut u = Mat::<Complex64>::identity(dim, dim);
+    for g in gates {
+        let m = gate_matrix(g, num_qubits);
+        u = &u * &m;
+    }
+    u
+}
+
+/// Same as [`gates_to_unitary`] but infers `num_qubits` from the largest qubit
+/// index that appears in `gates`. Returns the 1×1 identity if `gates` is empty.
+pub fn gates_to_unitary_auto(gates: &VecDeque<Gate>) -> Mat<Complex64> {
+    let max_q = gates
+        .iter()
+        .flat_map(|g| [g.ctrl, g.targ])
+        .max()
+        .unwrap_or(0);
+    gates_to_unitary(gates, max_q + 1)
+}
+
+/// Compare two unitaries up to a global phase.
+///
+/// Returns `Some(phase)` if `built ≈ phase · target` (Frobenius distance < `tol`),
+/// where `|phase| = 1`. Returns `None` otherwise.
+///
+/// The phase is computed as `tr(target^† · built) / n`, normalised to unit
+/// modulus. If the matrices really do differ only by a scalar, this gives that
+/// scalar exactly; otherwise the Frobenius check rejects them.
+pub fn equal_up_to_global_phase(
+    built: &Mat<Complex64>,
+    target: &Mat<Complex64>,
+    tol: f64,
+) -> Option<Complex64> {
+    let n = target.nrows();
+    if built.nrows() != n || built.ncols() != n || target.ncols() != n {
+        return None;
+    }
+
+    let inner = target.conjugate().transpose() * built;
+    let mut tr = Complex64::new(0.0, 0.0);
+    for i in 0..n {
+        tr = tr + inner[(i, i)];
+    }
+    let avg = tr / Complex64::new(n as f64, 0.0);
+    let mag = avg.abs();
+    if mag < 1e-12 {
+        // Matrices are essentially orthogonal — definitely not phase-equivalent.
+        return None;
+    }
+    let phase = avg / Complex64::new(mag, 0.0);
+
+    let mut sq = 0.0_f64;
+    for i in 0..n {
+        for j in 0..n {
+            let d = built[(i, j)] - target[(i, j)] * phase;
+            sq += d.abs() * d.abs();
+        }
+    }
+    if sq.sqrt() < tol {
+        Some(phase)
+    } else {
+        None
+    }
+}
+
+// =====================================================================
+//                       Internal: gate dispatch
+// =====================================================================
+
+fn gate_matrix(g: &Gate, n: usize) -> Mat<Complex64> {
+    match g.name {
+        "RZ"   => embed_single_qubit(&rz(g.value), g.targ, n),
+        "RY"   => embed_single_qubit(&ry(g.value), g.targ, n),
+        "RX"   => embed_single_qubit(&rx(g.value), g.targ, n),
+        "H"    => embed_single_qubit(&hadamard(), g.targ, n),
+        "CX"   => cnot_full(g.ctrl, g.targ, n),
+        "SWAP" => swap_full(g.ctrl, g.targ, n),
+        other  => panic!("gates_to_unitary: unknown gate '{other}'"),
+    }
+}
+
+// =====================================================================
+//                    Internal: matrix construction
+// =====================================================================
+
+/// Embed a 2×2 gate on qubit `q` into the full 2^n × 2^n Hilbert space as
+/// `I_{n-1} ⊗ ... ⊗ U_q ⊗ ... ⊗ I_0`.
+fn embed_single_qubit(g: &Mat<Complex64>, q: usize, n: usize) -> Mat<Complex64> {
+    let i2 = Mat::<Complex64>::identity(2, 2);
+    let mut acc: Option<Mat<Complex64>> = None;
+    for k in (0..n).rev() {
+        let factor = if k == q { g.clone() } else { i2.clone() };
+        acc = Some(match acc {
+            None => factor,
+            Some(a) => a.kron(factor),
+        });
+    }
+    acc.unwrap_or_else(|| Mat::<Complex64>::identity(1, 1))
+}
+
+/// Canonical (unphased) CNOT on `(ctrl, targ)`, embedded in 2^n × 2^n.
+fn cnot_full(ctrl: usize, targ: usize, n: usize) -> Mat<Complex64> {
+    let dim = 1usize << n;
+    Mat::from_fn(dim, dim, |i, j| {
+        let mapped = if (j >> ctrl) & 1 == 1 { j ^ (1 << targ) } else { j };
+        if i == mapped {
+            Complex64::new(1.0, 0.0)
+        } else {
+            Complex64::new(0.0, 0.0)
+        }
+    })
+}
+
+/// SWAP on `(a, b)`, embedded in 2^n × 2^n.
+fn swap_full(a: usize, b: usize, n: usize) -> Mat<Complex64> {
+    let dim = 1usize << n;
+    Mat::from_fn(dim, dim, |i, j| {
+        let ba = (j >> a) & 1;
+        let bb = (j >> b) & 1;
+        let mapped = if ba != bb { j ^ ((1 << a) | (1 << b)) } else { j };
+        if i == mapped {
+            Complex64::new(1.0, 0.0)
+        } else {
+            Complex64::new(0.0, 0.0)
+        }
+    })
+}
+
+// =====================================================================
+//                    Internal: single-qubit gates
+// =====================================================================
+
+fn rz(angle: f64) -> Mat<Complex64> {
+    let h = angle / 2.0;
+    mat![
+        [Complex64::new(h.cos(), -h.sin()), Complex64::new(0.0, 0.0)],
+        [Complex64::new(0.0, 0.0),          Complex64::new(h.cos(),  h.sin())],
+    ]
+}
+
+fn rx(angle: f64) -> Mat<Complex64> {
+    let (ch, sh) = ((angle / 2.0).cos(), (angle / 2.0).sin());
+    mat![
+        [Complex64::new(ch, 0.0),  Complex64::new(0.0, -sh)],
+        [Complex64::new(0.0, -sh), Complex64::new(ch, 0.0)],
+    ]
+}
+
+fn ry(angle: f64) -> Mat<Complex64> {
+    let (ch, sh) = ((angle / 2.0).cos(), (angle / 2.0).sin());
+    mat![
+        [Complex64::new(ch, 0.0), Complex64::new(-sh, 0.0)],
+        [Complex64::new(sh, 0.0), Complex64::new(ch, 0.0)],
+    ]
+}
+
+fn hadamard() -> Mat<Complex64> {
+    let s = 1.0 / SQRT_2;
+    mat![
+        [Complex64::new(s, 0.0), Complex64::new(s, 0.0)],
+        [Complex64::new(s, 0.0), Complex64::new(-s, 0.0)],
+    ]
 }
